@@ -1,10 +1,10 @@
 """
-tools/metrics_common.py
-=======================
+da_eval.metrics
+===============
 Framework-agnostic shared utilities for detection evaluation pipelines.
 
-These functions are reusable across RT-DETRv4 (rtdetr_metrics.py),
-Ultralytics/YOLO (da_metrics.py), and future architectures (e.g. D-FINE).
+Pure functions on COCO-format predictions and embeddings, shared by every
+detector adapter (RT-DETRv4, D-FINE, Ultralytics/YOLO, ...).
 
 Sections
 --------

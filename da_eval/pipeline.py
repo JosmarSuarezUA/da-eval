@@ -1,10 +1,10 @@
 """
-tools/da_pipeline.py
-====================
+da_eval.pipeline
+================
 Model-agnostic domain-adaptation evaluation protocol.
 
-A detector plugs in by subclassing ``DetectorAdapter`` (see ``rtdetr_metrics.py``
-for RT-DETRv4). Everything else -- threshold selection on the source validation
+A detector plugs in by subclassing ``DetectorAdapter`` (see
+``da_eval.adapters.yaml_engine`` for RT-DETRv4 and D-FINE). Everything else -- threshold selection on the source validation
 split, per-target metrics, confidence statistics, embeddings, t-SNE, MMD, CSV
 export and W&B logging -- lives here once and is shared by every model.
 
@@ -20,16 +20,15 @@ Protocol (one source checkpoint)
 Sections
 --------
 1.  Adapter interface (SplitOutput, DetectorAdapter)
-2.  Dataset config helpers
+2.  Dataset config helpers (load_dataset_configs)
 3.  Single-split evaluation (evaluate_split)
 4.  Multi-dataset orchestration (evaluate_source_against_targets)
 5.  Top-level orchestration (run_eval, run_all_sources)
-6.  CLI helpers
+6.  Reporting (print_results_summary)
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from abc import ABC, abstractmethod
@@ -39,7 +38,7 @@ from typing import Any
 
 import numpy as np
 
-from tools.metrics_common import (
+from da_eval.metrics import (
     calculate_conf_curves,
     calculate_metrics,
     compute_confidence_stats,
@@ -125,6 +124,31 @@ class DetectorAdapter(ABC):
 # ---------------------------------------------------------------------------
 # 2. Dataset Config Helpers
 # ---------------------------------------------------------------------------
+
+def load_dataset_configs(path: str | Path) -> dict:
+    """Load dataset definitions from a YAML file.
+
+    The file maps dataset keys to configs, e.g.::
+
+        A:
+          label: SeaDronesSee
+          iou: 0.20            # IoU for matching (curves + fixed operating point)
+          min_score: 0.001     # drop predictions below this score
+          splits:
+            train: {img_folder: ..., ann_file: ...}   # optional (t-SNE only)
+            val:   {img_folder: ..., ann_file: ...}   # required for a source
+            test:  {img_folder: ..., ann_file: ...}   # required
+    """
+    import yaml
+
+    with open(path) as fh:
+        configs = yaml.safe_load(fh)
+    if not isinstance(configs, dict) or not configs:
+        raise ValueError(f"{path} must map dataset keys to dataset configs")
+    for name, cfg in configs.items():
+        get_split(cfg, "test", name)
+    return configs
+
 
 def get_split(dataset_cfg: dict, split_name: str, dataset_name: str = "") -> dict:
     """Return ``dataset_cfg['splits'][split_name]`` or raise a descriptive error."""
@@ -553,63 +577,8 @@ def run_all_sources(
 
 
 # ---------------------------------------------------------------------------
-# 6. CLI Helpers
+# 6. Reporting
 # ---------------------------------------------------------------------------
-
-def build_common_cli_parser(description: str) -> argparse.ArgumentParser:
-    """Arguments shared by every model's CLI (single source dataset)."""
-    p = argparse.ArgumentParser(description=description)
-    p.add_argument("--checkpoint", "-r", required=True, help="Path to model checkpoint")
-    p.add_argument("--img-folder", required=True, help="Path to test images directory")
-    p.add_argument("--ann-file", required=True, help="Path to test COCO annotations (.json)")
-    p.add_argument("--val-img-folder", required=True, help="Path to validation images (threshold selection)")
-    p.add_argument("--val-ann-file", required=True, help="Path to validation COCO annotations (.json)")
-    p.add_argument("--output-dir", default="eval_output", help="Directory to save outputs")
-    p.add_argument("--device", default=None, help="Torch device (default: cuda:0 if available)")
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--iou-match", type=float, default=0.50, help="IoU threshold for curves and fixed operating point")
-    p.add_argument("--min-score", type=float, default=0.001, help="Filter predictions below score")
-    p.add_argument("--extract-embeddings", action="store_true", help="Extract and save image embeddings")
-    p.add_argument("--run-name", default="cli_eval", help="Evaluation run name")
-    p.add_argument("--dataset-label", default="dataset", help="Human-readable label for dataset")
-    p.add_argument("--source-name", default="A", help="Dataset identifier key")
-    p.add_argument("--wandb-project", default=None, help="Optional W&B project name")
-    p.add_argument("--wandb-entity", default=None, help="Optional W&B entity/team name")
-    return p
-
-
-def dataset_configs_from_args(args: argparse.Namespace) -> dict:
-    return {
-        args.source_name: {
-            "label": args.dataset_label,
-            "splits": {
-                "val": {"ann_file": args.val_ann_file, "img_folder": args.val_img_folder},
-                "test": {"ann_file": args.ann_file, "img_folder": args.img_folder},
-            },
-            "iou": args.iou_match,
-            "min_score": args.min_score,
-        }
-    }
-
-
-def run_cli(adapter: DetectorAdapter, args: argparse.Namespace) -> list[dict]:
-    """Run a single-dataset evaluation from parsed common CLI args and print a summary."""
-    results = run_eval(
-        adapter,
-        run_name=args.run_name,
-        checkpoint_path=args.checkpoint,
-        dataset_configs=dataset_configs_from_args(args),
-        source_name=args.source_name,
-        result_folder=args.output_dir,
-        extract_embeddings_flag=args.extract_embeddings,
-        wandb_project=args.wandb_project,
-        wandb_entity=args.wandb_entity,
-    )
-    print_results_summary(results)
-    print(f"[✓] All evaluation outputs saved to: {os.path.abspath(args.output_dir)}")
-    return results
-
 
 _SUMMARY_SKIP_KEYS = {
     "run_name", "model_name", "config_path", "checkpoint_path", "ann_file", "img_folder",
