@@ -4,9 +4,10 @@ da_eval.pipeline
 Model-agnostic domain-adaptation evaluation protocol.
 
 A detector plugs in by subclassing ``DetectorAdapter`` (see
-``da_eval.adapters.yaml_engine`` for RT-DETRv4 and D-FINE). Everything else -- threshold selection on the source validation
-split, per-target metrics, confidence statistics, embeddings, t-SNE, MMD, CSV
-export and W&B logging -- lives here once and is shared by every model.
+``da_eval.adapters.yaml_engine`` for RT-DETRv4 and D-FINE). Everything else --
+threshold selection on the source validation split, per-target metrics,
+confidence statistics, embeddings, t-SNE, MMD, CSV export and W&B logging --
+lives here once and is shared by every model.
 
 Protocol (one source checkpoint)
 --------------------------------
