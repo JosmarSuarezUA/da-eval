@@ -36,3 +36,18 @@ B:
     test:
       ann_file: /data2/detection_datasets/processed/synbase_coco/instances_test.json
       img_folder: /data2/detection_datasets/processed/synbase_yolov5/images/test
+
+C:
+  label: AFO
+  iou: 0.20
+  min_score: 0.001
+  splits:
+    train:
+      ann_file: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_coco/instances_train.json
+      img_folder: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_yolov5/images/train
+    val:
+      ann_file: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_coco/instances_val.json
+      img_folder: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_yolov5/images/val
+    test:
+      ann_file: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_coco/instances_test.json
+      img_folder: /data2/detection_datasets/processed/afo_humans_no_vehicle_050_yolov5/images/test
