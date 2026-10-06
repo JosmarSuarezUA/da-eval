@@ -21,7 +21,7 @@ Protocol (one source checkpoint)
 Sections
 --------
 1.  Adapter interface (SplitOutput, DetectorAdapter)
-2.  Dataset config helpers (load_dataset_configs)
+2.  Dataset config helpers (get_split; YAML loading is in da_eval.datasets)
 3.  Single-split evaluation (evaluate_split)
 4.  Multi-dataset orchestration (evaluate_source_against_targets)
 5.  Top-level orchestration (run_eval, run_all_sources)
@@ -39,6 +39,7 @@ from typing import Any
 
 import numpy as np
 
+from da_eval.datasets import load_dataset_configs, read_categories  # noqa: F401  (re-exported)
 from da_eval.metrics import (
     calculate_conf_curves,
     calculate_metrics,
@@ -94,9 +95,16 @@ class DetectorAdapter(ABC):
 
     def __init__(self) -> None:
         self.checkpoint_path: str | None = None
+        self.num_classes: int | None = None
 
-    def load(self, checkpoint_path: str | Path) -> None:
-        """Load the weights of one source checkpoint (called once per source)."""
+    def load(self, checkpoint_path: str | Path, num_classes: int | None = None) -> None:
+        """Load the weights of one source checkpoint (called once per source).
+
+        ``num_classes`` is the number of categories of the source dataset the
+        checkpoint was trained on; adapters use it to build a matching head.
+        Model class index i corresponds to the i-th category in sorted id order.
+        """
+        self.num_classes = num_classes
         self._load(str(checkpoint_path))
         self.checkpoint_path = str(checkpoint_path)
 
@@ -126,38 +134,14 @@ class DetectorAdapter(ABC):
 # 2. Dataset Config Helpers
 # ---------------------------------------------------------------------------
 
-def load_dataset_configs(path: str | Path) -> dict:
-    """Load dataset definitions from a YAML file.
-
-    The file maps dataset keys to configs, e.g.::
-
-        A:
-          label: SeaDronesSee
-          iou: 0.20            # IoU for matching (curves + fixed operating point)
-          min_score: 0.001     # drop predictions below this score
-          splits:
-            train: {img_folder: ..., ann_file: ...}   # optional (t-SNE only)
-            val:   {img_folder: ..., ann_file: ...}   # required for a source
-            test:  {img_folder: ..., ann_file: ...}   # required
-    """
-    import yaml
-
-    with open(path) as fh:
-        configs = yaml.safe_load(fh)
-    if not isinstance(configs, dict) or not configs:
-        raise ValueError(f"{path} must map dataset keys to dataset configs")
-    for name, cfg in configs.items():
-        get_split(cfg, "test", name)
-    return configs
-
-
 def get_split(dataset_cfg: dict, split_name: str, dataset_name: str = "") -> dict:
     """Return ``dataset_cfg['splits'][split_name]`` or raise a descriptive error."""
     splits = dataset_cfg.get("splits")
     split = splits.get(split_name) if isinstance(splits, dict) else None
     if not isinstance(split, dict) or "img_folder" not in split or "ann_file" not in split:
         raise ValueError(
-            f"Dataset '{dataset_name}' must define splits['{split_name}'] with 'img_folder' and 'ann_file'"
+            f"Dataset '{dataset_name}' has no '{split_name}' split "
+            f"(needed here; add it to the datasets YAML)"
         )
     return split
 
@@ -307,9 +291,14 @@ def evaluate_source_against_targets(
     """
     result_folder = Path(result_path)
     result_folder.mkdir(parents=True, exist_ok=True)
-    target_names = target_names or list(dataset_configs.keys())
+    if target_names is None:
+        target_names = [n for n, cfg in dataset_configs.items() if "test" in cfg.get("splits", {})]
+        skipped = [n for n in dataset_configs if n not in target_names]
+        if skipped and verbose:
+            print(f"[*] Not evaluated as targets (no test split): {skipped}")
 
-    adapter.load(checkpoint_path)
+    source_val = get_split(dataset_configs[source_name], "val", source_name)
+    adapter.load(checkpoint_path, num_classes=len(read_categories(source_val["ann_file"])))
     model_info = adapter.describe()
 
     if run is not None:

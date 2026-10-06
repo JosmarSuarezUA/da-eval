@@ -51,7 +51,8 @@ def get_label_to_category_map(coco_gt: Any, remap_mscoco: bool = False) -> dict[
     """
     Map model predicted class index (0..num_classes-1) to dataset category_id.
     - If remap_mscoco is True and category IDs match MS COCO (80 classes, max 90): uses MSCOCO mapping.
-    - For custom datasets (e.g. single-class 0:swimmer): 0th model output maps to the first sorted category id.
+    - Otherwise index i maps to the i-th category in sorted id order, the same order
+      ``da-train`` uses when it writes zero-based training annotations.
     """
     cat_ids = sorted(coco_gt.getCatIds())
     if remap_mscoco and len(cat_ids) == 80 and max(cat_ids) == 90:
@@ -165,7 +166,12 @@ class YAMLEngineAdapter(DetectorAdapter):
             self._hook_handle = None
 
         YAMLConfig = get_yaml_config(self.repo_root, self.core_module)
-        self.cfg = YAMLConfig(self.config_path, resume=checkpoint_path, **self.yaml_overrides)
+        # Postprocessor must output raw class indices (0..K-1); they are mapped to each
+        # dataset's category ids here (sorted order), not through the MS COCO table.
+        overrides = {"remap_mscoco_category": False, **self.yaml_overrides}
+        if self.num_classes is not None:
+            overrides["num_classes"] = self.num_classes
+        self.cfg = YAMLConfig(self.config_path, resume=checkpoint_path, **overrides)
 
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         state_dict = ckpt.get("ema", {}).get("module", ckpt.get("model", ckpt))
