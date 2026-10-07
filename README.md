@@ -71,8 +71,9 @@ Use `--model dfine` in the D-FINE repository. Results go to `results/<model>/sou
 W&B logging needs `WANDB_API_KEY` in the environment or in `~/.env`.
 
 The number of classes is taken from the datasets, so a 1-class checkpoint can be evaluated with
-an 80-class COCO config. Config keys can be overridden like `train.py -u`, e.g.
-`-u HGNetv2.pretrained=False` to skip downloading backbone weights the checkpoint replaces anyway.
+an 80-class COCO config. ImageNet backbone weights are not loaded or downloaded during evaluation,
+because the checkpoint replaces every weight. Config keys can be overridden like `train.py -u`
+(`-u key=value ...`).
 
 ### Protocol
 

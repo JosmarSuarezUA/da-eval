@@ -1,6 +1,6 @@
 [project]
 name = "da-eval"
-version = "0.2.0"
+version = "0.2.1"
 description = "Shared domain-adaptation evaluation for object detectors (RT-DETRv4, D-FINE, Ultralytics)"
 readme = "README.md"
 license = "MIT"

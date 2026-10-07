@@ -172,6 +172,7 @@ class YAMLEngineAdapter(DetectorAdapter):
         if self.num_classes is not None:
             overrides["num_classes"] = self.num_classes
         self.cfg = YAMLConfig(self.config_path, resume=checkpoint_path, **overrides)
+        self._disable_backbone_download()
 
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         state_dict = ckpt.get("ema", {}).get("module", ckpt.get("model", ckpt))
@@ -182,6 +183,23 @@ class YAMLEngineAdapter(DetectorAdapter):
 
         self.embedding_module, target_mod = find_embedding_module(self.model, self.embedding_module)
         self._hook_handle = target_mod.register_forward_hook(self._hook)
+
+    def _disable_backbone_download(self) -> None:
+        """Don't load ImageNet-pretrained backbone weights: the checkpoint replaces every weight.
+
+        Their download path assumes torchrun (it calls torch.distributed) and fails in a
+        plain process, and it needs internet access. Only applied when the backbone
+        accepts ``pretrained``; an explicit ``yaml_overrides[<backbone>]["pretrained"]`` wins.
+        """
+        yaml_cfg = self.cfg.yaml_cfg
+        model_name = yaml_cfg.get("model")
+        model_cfg = yaml_cfg.get(model_name) if isinstance(model_name, str) else None
+        backbone = model_cfg.get("backbone") if isinstance(model_cfg, dict) else None
+        if not isinstance(backbone, str) or "pretrained" in (self.yaml_overrides.get(backbone) or {}):
+            return
+        registry = importlib.import_module(f"{self.core_module}.workspace").GLOBAL_CONFIG
+        if "pretrained" in registry.get(backbone, {}).get("_kwargs", {}):
+            yaml_cfg.setdefault(backbone, {})["pretrained"] = False
 
     def describe(self) -> dict[str, Any]:
         return {**super().describe(), "config_path": self.config_path}
