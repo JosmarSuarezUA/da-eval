@@ -30,8 +30,11 @@ Sections
 
 from __future__ import annotations
 
+import csv
 import json
 import os
+import re
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,6 +160,33 @@ def _split_available(dataset_cfg: dict, split_name: str) -> dict | None:
     return None
 
 
+def save_embeddings(
+    npy_path: str | Path,
+    embeddings: np.ndarray,
+    image_ids: list[int],
+    file_names: list[str],
+) -> Path:
+    """Save embeddings as ``.npy`` plus ``<stem>_images.csv`` mapping each row to its image.
+
+    The CSV has columns ``row, image_id, file_name`` (image ids from the split's
+    annotation file). Returns the CSV path.
+    """
+    npy_path = Path(npy_path)
+    if not (len(embeddings) == len(image_ids) == len(file_names)):
+        raise ValueError(
+            f"{npy_path.name}: {len(embeddings)} embeddings but {len(image_ids)} image ids "
+            f"and {len(file_names)} file names"
+        )
+    npy_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(npy_path, embeddings)
+    csv_path = npy_path.with_name(f"{npy_path.stem}_images.csv")
+    with open(csv_path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["row", "image_id", "file_name"])
+        writer.writerows((i, img_id, name) for i, (img_id, name) in enumerate(zip(image_ids, file_names)))
+    return csv_path
+
+
 def _ensure_coco_gt(output: SplitOutput, split: dict) -> Any:
     if output.coco_gt is None:
         from pycocotools.coco import COCO
@@ -207,7 +237,8 @@ def evaluate_split(
         with open(out_dir_path / "predictions.json", "w") as fh:
             json.dump(predictions, fh)
         if output.embeddings is not None:
-            np.save(out_dir_path / "embeddings.npy", output.embeddings)
+            save_embeddings(out_dir_path / "embeddings.npy", output.embeddings,
+                            output.image_ids, output.file_names)
 
     det_metrics = calculate_metrics(
         pred_list=predictions,
@@ -318,6 +349,7 @@ def evaluate_source_against_targets(
 
     results: list[dict] = []
     embeddings_by_dataset: dict[str, np.ndarray] = {}
+    embedding_groups: list[dict] = []  # manifest entries, one per saved embeddings file
 
     # Evaluate each target test split
     for target_name in target_names:
@@ -345,7 +377,20 @@ def evaluate_source_against_targets(
 
         if emb is not None:
             embeddings_by_dataset[target_name] = emb
-            np.save(result_folder / f"embeddings_{source_name}_to_{target_name}.npy", emb)
+            npy_name = f"embeddings_{source_name}_to_{target_name}.npy"
+            np.save(result_folder / npy_name, emb)
+            csv_name = npy_name.replace(".npy", "_images.csv")
+            shutil.copyfile(result_folder / target_name / "embeddings_images.csv", result_folder / csv_name)
+            embedding_groups.append({
+                "name": f"{cfg_t.get('label', target_name)} test",
+                "dataset": target_name,
+                "label": cfg_t.get("label", target_name),
+                "split": "test",
+                "role": "source" if target_name == source_name else "target",
+                "embeddings": npy_name,
+                "images": csv_name,
+                "num_images": int(len(emb)),
+            })
 
     # Optional: source training embeddings for complete domain visualization
     src_train_split = _split_available(dataset_configs[source_name], "train")
@@ -356,8 +401,28 @@ def evaluate_source_against_targets(
             src_train_split, with_predictions=False, with_embeddings=True, verbose=verbose,
         )
         if output.embeddings is not None:
-            np.save(result_folder / f"embeddings_{source_name}_train.npy", output.embeddings)
+            npy_name = f"embeddings_{source_name}_train.npy"
+            csv_path = save_embeddings(result_folder / npy_name, output.embeddings,
+                                       output.image_ids, output.file_names)
             embeddings_by_dataset["source_train"] = output.embeddings
+            source_label = dataset_configs[source_name].get("label", source_name)
+            embedding_groups.insert(0, {
+                "name": f"{source_label} train",
+                "dataset": source_name,
+                "label": source_label,
+                "split": "train",
+                "role": "source",
+                "embeddings": npy_name,
+                "images": csv_path.name,
+                "num_images": int(len(output.embeddings)),
+            })
+
+    if embedding_groups:
+        manifest_path = write_embeddings_manifest(
+            result_folder, embedding_groups, source_name, dataset_configs, model_info,
+        )
+        if run is not None:
+            log_embeddings_artifact(run, adapter, source_name, result_folder, manifest_path, embedding_groups)
 
     # Domain gap (MMD) between source test and each target test embedding set
     if extract_embeddings_flag and source_name in embeddings_by_dataset:
@@ -388,6 +453,57 @@ def evaluate_source_against_targets(
         _log_tsne(adapter, dataset_configs, source_name, target_names, embeddings_by_dataset, run)
 
     return results, embeddings_by_dataset
+
+
+def write_embeddings_manifest(
+    result_folder: Path,
+    groups: list[dict],
+    source_name: str,
+    dataset_configs: dict,
+    model_info: dict,
+) -> Path:
+    """Write ``embeddings_manifest.json`` describing every saved embeddings group of one source."""
+    first = np.load(result_folder / groups[0]["embeddings"], mmap_mode="r")
+    manifest = {
+        "source": source_name,
+        "source_label": dataset_configs[source_name].get("label", source_name),
+        **model_info,
+        "embedding_dim": int(first.shape[1]),
+        "groups": groups,
+    }
+    path = result_folder / "embeddings_manifest.json"
+    with open(path, "w") as fh:
+        json.dump(manifest, fh, indent=2)
+    return path
+
+
+def log_embeddings_artifact(
+    run: Any,
+    adapter: DetectorAdapter,
+    source_name: str,
+    result_folder: Path,
+    manifest_path: Path,
+    groups: list[dict],
+) -> None:
+    """Log the embeddings (.npy), row-to-image CSVs and manifest as one W&B artifact.
+
+    Named ``embeddings-<model>-<source>`` (type ``embeddings``); the manifest is also
+    stored as the artifact's metadata, so a later analysis run can use it and W&B
+    records which evaluation produced the embeddings.
+    """
+    try:
+        import wandb
+    except ImportError:
+        return
+    with open(manifest_path) as fh:
+        manifest = json.load(fh)
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", f"embeddings-{adapter.slug}-{source_name}")
+    artifact = wandb.Artifact(name, type="embeddings", metadata=manifest)
+    artifact.add_file(str(manifest_path))
+    for group in groups:
+        artifact.add_file(str(result_folder / group["embeddings"]))
+        artifact.add_file(str(result_folder / group["images"]))
+    run.log_artifact(artifact)
 
 
 def add_domain_gaps(
