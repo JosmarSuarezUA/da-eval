@@ -15,6 +15,10 @@ Run it from inside the model repository, e.g. in RT-DETRv4::
 Validate a datasets YAML (paths, COCO files, images, classes)::
 
     uv run da-eval check --datasets ~/my_datasets.yaml
+
+Analyse the saved embeddings of one source (needs the [analysis] extra)::
+
+    uv run da-eval embeddings --results results/rtdetr/source_AFO --wandb-project my_project
 """
 
 from __future__ import annotations
@@ -61,7 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="da-eval",
         description="Cross-domain evaluation: each source checkpoint vs. every dataset's test split. "
-                    "Use 'da-eval check --datasets FILE' to validate a datasets YAML.",
+                    "Use 'da-eval check --datasets FILE' to validate a datasets YAML and "
+                    "'da-eval embeddings --help' to analyse saved embeddings.",
     )
     p.add_argument("--model", required=True, choices=sorted(ADAPTERS), help="Detector adapter")
     p.add_argument("--config", "-c", required=True, help="Model YAML config")
@@ -94,6 +99,9 @@ def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["check"]:
         return check_main(argv[1:])
+    if argv[:1] == ["embeddings"]:
+        from da_eval.embedding_analysis import main as embeddings_main
+        return embeddings_main(argv[1:])
     args = build_parser().parse_args(argv)
     dataset_configs = load_dataset_configs(args.datasets)
     checkpoints = _parse_checkpoints(args.checkpoint, dataset_configs)

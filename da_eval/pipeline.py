@@ -581,8 +581,16 @@ def init_wandb_run(
     wandb_project: str | None,
     wandb_entity: str | None = None,
     wandb_tags: list[str] | None = None,
+    job_type: str = "eval",
+    name: str | None = None,
+    run_id: str | None = None,
+    config: dict | None = None,
 ) -> Any:
-    """Start a W&B eval run, or return None if W&B is disabled/unavailable."""
+    """Start a W&B run, or return None if W&B is disabled/unavailable.
+
+    Defaults give the evaluation run (``eval_<run_name>`` in group ``<run_name>``).
+    ``run_id`` resumes an existing run instead (e.g. to add results to an eval run).
+    """
     if wandb_project is None:
         return None
 
@@ -600,13 +608,16 @@ def init_wandb_run(
     try:
         import wandb
         wandb.login()
+        if run_id is not None:
+            return wandb.init(project=wandb_project, entity=wandb_entity, id=run_id, resume="must")
         return wandb.init(
             project=wandb_project,
             entity=wandb_entity,
-            job_type="eval",
+            job_type=job_type,
             tags=wandb_tags,
-            name=f"eval_{run_name}",
+            name=name or f"eval_{run_name}",
             group=run_name,
+            config=config,
         )
     except Exception as exc:
         print(f"[!] W&B init failed (continuing without it): {exc}")

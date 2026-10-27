@@ -89,6 +89,34 @@ For every source dataset, the checkpoint trained on it is evaluated as follows:
 
 Outputs: per-target JSON/NPY files, a CSV per source, and optional W&B logging
 (scalars, curves, Table 1 metrics, Table 2 operating points + domain gap, t-SNE).
+Each embeddings `.npy` has a `<name>_images.csv` mapping rows to `image_id`/`file_name`, and
+each source folder an `embeddings_manifest.json`; with W&B they are also logged as the
+artifact `embeddings-<model>-<source>`.
+
+## 4. Analyse the embeddings
+
+Projections and pymdma distribution metrics of the embeddings saved by the evaluation,
+for one source model (needs the analysis extra, `pip install "da-eval[analysis]"`):
+
+```bash
+uv run da-eval embeddings --results results/rtdetr/source_AFO --wandb-project my_project
+uv run da-eval embeddings --artifact embeddings-rtdetr-C:latest --wandb-project my_project
+```
+
+- **Projections:** PCA, t-SNE, UMAP and PaCMAP (`--methods` to choose) of source train, source
+  test and every target test, on a balanced subset (same number of images per group; `--no-balance`,
+  `--max-per-group`, `--seed`). Saved as PNG and logged as `embeddings/<method>`.
+- **Distribution metrics (pymdma):** improved precision, improved recall, density and coverage of
+  the source test and each target test against the **source train** embeddings (full sets; `--k`,
+  `--metric`). Saved to `embedding_metrics.csv`, with per-image scores in
+  `instance_scores_<dataset>_<split>.csv`; logged as `<dataset>/pymdma/<metric>` and
+  "Table 3: Embedding distribution metrics".
+- **W&B:** a separate run (`job_type=embedding-analysis`) in the same group as the evaluation run;
+  `--wandb-run-id <id>` adds the results to an existing run instead (e.g. the evaluation run, to
+  have mAP and the embedding metrics side by side). `--artifact` records which evaluation produced
+  the embeddings.
+- Outputs go to `<results>/embedding_analysis/` (`--output-dir` to change). Results from before
+  manifests existed are supported (groups are inferred from the file names).
 
 For standalone embedding visualizations, `EmbeddingEvaluator.plot_embeddings`
 uses the same Matplotlib-based image workflow as the shared t-SNE helper. It
@@ -157,7 +185,9 @@ da_eval/
   pipeline.py           DetectorAdapter interface + evaluation protocol
   adapters/
     yaml_engine.py      RT-DETRv4 and D-FINE (shared YAMLConfig engine)
-  cli.py                da-eval command (evaluation, check)
+  embedding_evaluation.py  EmbeddingEvaluator: projections and pymdma metrics (analysis extra)
+  embedding_analysis.py    da-eval embeddings command
+  cli.py                da-eval command (evaluation, check, embeddings)
   train.py              da-train command
 datasets.example.yaml   template for your datasets file
 ```
