@@ -90,6 +90,26 @@ For every source dataset, the checkpoint trained on it is evaluated as follows:
 Outputs: per-target JSON/NPY files, a CSV per source, and optional W&B logging
 (scalars, curves, Table 1 metrics, Table 2 operating points + domain gap, t-SNE).
 
+For standalone embedding visualizations, `EmbeddingEvaluator.plot_embeddings`
+uses the same Matplotlib-based image workflow as the shared t-SNE helper. It
+returns a Matplotlib figure for local use, or can log a `wandb.Image` directly.
+UMAP, PaCMAP and the pymdma metrics need the optional analysis extra (not required for
+training or evaluation): `pip install "da-eval[analysis]"`, or in a model repository
+`uv add "da-eval[analysis] @ git+https://github.com/JosmarSuarezUA/da-eval@<tag>"`.
+
+```python
+from da_eval.embedding_evaluation import EmbeddingEvaluator
+
+evaluator = EmbeddingEvaluator(embedding_paths)
+coordinates = evaluator.run_tsne(balanced=False)
+image = evaluator.plot_embeddings(
+    coordinates,
+    balanced=False,
+    wandb_run=run,
+    wandb_key="embeddings/tsne",
+)
+```
+
 ## From Python
 
 ```python

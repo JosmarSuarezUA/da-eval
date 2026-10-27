@@ -17,6 +17,15 @@ dependencies = [
     "wandb",
 ]
 
+[project.optional-dependencies]
+# Embedding analysis (da_eval.embedding_evaluation): pip install "da-eval[analysis]"
+analysis = [
+    "pacmap>=0.9.1",
+    "pandas",
+    "pymdma>=0.3.0",
+    "umap-learn>=0.5.12",
+]
+
 [project.scripts]
 da-eval = "da_eval.cli:main"
 da-train = "da_eval.train:main"
