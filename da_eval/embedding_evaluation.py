@@ -44,6 +44,7 @@ class EmbeddingEvaluator:
             ...
         }
 
+    Values can also be already-loaded (n_images, embedding_dim) arrays.
     Each row corresponds to one image.
     Each column corresponds to one embedding feature.
     """
@@ -100,14 +101,17 @@ class EmbeddingEvaluator:
         print("--- Loading Embeddings ---")
 
         for name, filepath in self.emb_path_dict.items():
-            filepath = Path(filepath)
+            if isinstance(filepath, np.ndarray):  # already loaded (e.g. one level's columns)
+                data = filepath
+            else:
+                filepath = Path(filepath)
 
-            if not filepath.exists():
-                raise FileNotFoundError(
-                    f"Embedding file not found: {filepath}"
-                )
+                if not filepath.exists():
+                    raise FileNotFoundError(
+                        f"Embedding file not found: {filepath}"
+                    )
 
-            data = np.load(filepath)
+                data = np.load(filepath)
 
             if data.ndim != 2:
                 raise ValueError(

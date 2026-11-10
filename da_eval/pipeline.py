@@ -99,6 +99,9 @@ class DetectorAdapter(ABC):
     def __init__(self) -> None:
         self.checkpoint_path: str | None = None
         self.num_classes: int | None = None
+        # Column ranges of the embedding parts, e.g. [{"name": "P3", "start": 0, "stop": 256}, ...];
+        # set by adapters whose embedding concatenates several feature maps (stored in the manifest).
+        self.embedding_levels: list[dict] | None = None
 
     def load(self, checkpoint_path: str | Path, num_classes: int | None = None) -> None:
         """Load the weights of one source checkpoint (called once per source).
@@ -420,6 +423,7 @@ def evaluate_source_against_targets(
     if embedding_groups:
         manifest_path = write_embeddings_manifest(
             result_folder, embedding_groups, source_name, dataset_configs, model_info,
+            embedding_levels=adapter.embedding_levels,
         )
         if run is not None:
             log_embeddings_artifact(run, adapter, source_name, result_folder, manifest_path, embedding_groups)
@@ -461,14 +465,20 @@ def write_embeddings_manifest(
     source_name: str,
     dataset_configs: dict,
     model_info: dict,
+    embedding_levels: list[dict] | None = None,
 ) -> Path:
-    """Write ``embeddings_manifest.json`` describing every saved embeddings group of one source."""
+    """Write ``embeddings_manifest.json`` describing every saved embeddings group of one source.
+
+    ``embedding_levels`` (column range of each concatenated feature map, e.g. P3/P4/P5)
+    lets ``da-eval embeddings --levels`` analyse each level separately.
+    """
     first = np.load(result_folder / groups[0]["embeddings"], mmap_mode="r")
     manifest = {
         "source": source_name,
         "source_label": dataset_configs[source_name].get("label", source_name),
         **model_info,
         "embedding_dim": int(first.shape[1]),
+        **({"embedding_levels": embedding_levels} if embedding_levels else {}),
         "groups": groups,
     }
     path = result_folder / "embeddings_manifest.json"

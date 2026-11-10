@@ -110,7 +110,15 @@ uv run da-eval embeddings --artifact embeddings-rtdetr-C:latest --wandb-project 
   the source test and each target test against the **source train** embeddings (full sets; `--k`,
   `--metric`). Saved to `embedding_metrics.csv`, with per-image scores in
   `instance_scores_<dataset>_<split>.csv`; logged as `<dataset>/pymdma/<metric>` and
-  "Table 3: Embedding distribution metrics".
+  "Table 3: Embedding distribution metrics". The table also has the MMD² of each target test
+  against the source test (`<dataset>/mmd2`), computed as in the evaluation.
+- **Levels:** the default embedding concatenates the pooled encoder outputs, [P3 | P4 | P5]
+  (256 columns each for RT-DETRv4 and D-FINE). `--levels all P3 P4 P5` runs the analysis on the
+  full vector and on each level separately, with no re-evaluation. Each level goes to
+  `embedding_analysis/<level>/` and is logged with `/<level>` added to the keys
+  (`embeddings/P3/tsne`, `<dataset>/pymdma/P3/density`, `<dataset>/mmd2/P3`); `all` keeps the
+  plain keys. The level layout is recorded in `embeddings_manifest.json` (`embedding_levels`);
+  older results are assumed to be the default [P3 | P4 | P5] encoder embedding.
 - **W&B:** a separate run (`job_type=embedding-analysis`) in the same group as the evaluation run;
   `--wandb-run-id <id>` adds the results to an existing run instead (e.g. the evaluation run, to
   have mAP and the embedding metrics side by side). `--artifact` records which evaluation produced

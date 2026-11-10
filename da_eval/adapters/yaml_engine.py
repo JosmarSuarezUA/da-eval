@@ -18,6 +18,7 @@ Sections
 from __future__ import annotations
 
 import importlib
+import math
 import os
 import sys
 from typing import Any
@@ -97,6 +98,30 @@ def pool_features(feat_output) -> torch.Tensor:
     return torch.cat(pooled, dim=1)
 
 
+def feature_levels(feat_output, input_width: int) -> list[dict]:
+    """Column range of each part in the ``pool_features`` vector, in the same order.
+
+    Feature maps are named after their pyramid level, ``P<log2(stride)>`` (stride 8 -> P3);
+    token sequences, or maps whose names would repeat, are named ``part<i>``.
+    """
+    feats = feat_output if isinstance(feat_output, (list, tuple)) else [feat_output]
+    parts = [f for f in feats if isinstance(f, torch.Tensor) and f.dim() in (3, 4)]
+    names = []
+    for i, f in enumerate(parts):
+        stride = input_width / f.shape[-1] if f.dim() == 4 else 0
+        level = math.log2(stride) if stride >= 1 else 0.5
+        names.append(f"P{int(level)}" if level.is_integer() else f"part{i}")
+    if len(set(names)) < len(names):
+        names = [f"part{i}" for i in range(len(parts))]
+
+    levels, start = [], 0
+    for name, f in zip(names, parts):
+        dim = f.shape[1] if f.dim() == 4 else f.shape[2]
+        levels.append({"name": name, "start": start, "stop": start + dim})
+        start += dim
+    return levels
+
+
 def find_embedding_module(model: torch.nn.Module, embedding_module: str) -> tuple[str, torch.nn.Module]:
     """Resolve the module to hook, falling back to common RT-DETR component names."""
     submodules = dict(model.named_modules())
@@ -164,6 +189,7 @@ class YAMLEngineAdapter(DetectorAdapter):
         if self._hook_handle is not None:
             self._hook_handle.remove()
             self._hook_handle = None
+        self.embedding_levels = None
 
         YAMLConfig = get_yaml_config(self.repo_root, self.core_module)
         # Postprocessor must output raw class indices (0..K-1); they are mapped to each
@@ -202,7 +228,7 @@ class YAMLEngineAdapter(DetectorAdapter):
             yaml_cfg.setdefault(backbone, {})["pretrained"] = False
 
     def describe(self) -> dict[str, Any]:
-        return {**super().describe(), "config_path": self.config_path}
+        return {**super().describe(), "config_path": self.config_path, "embedding_module": self.embedding_module}
 
     def build_dataloader(self, img_folder: str, ann_file: str):
         """Build a fresh val-style dataloader for the given split."""
@@ -256,6 +282,8 @@ class YAMLEngineAdapter(DetectorAdapter):
 
                 if with_embeddings and self._hook.features is not None:
                     batch_emb = pool_features(self._hook.features).detach().cpu().numpy()
+                    if self.embedding_levels is None:
+                        self.embedding_levels = feature_levels(self._hook.features, samples.shape[-1])
                     for k, img_id in enumerate(batch_img_ids):
                         file_names.append(coco_gt.imgs[img_id]["file_name"])
                         emb_list.append(batch_emb[k])

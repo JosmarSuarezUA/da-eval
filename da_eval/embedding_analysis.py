@@ -8,13 +8,17 @@ evaluation pipeline for one source model, with ``EmbeddingEvaluator``.
   saved as PNG and logged to W&B as ``embeddings/<method>``.
 - pymdma distribution metrics (improved precision/recall, density, coverage)
   with the **source train** embeddings as reference, against the source test
-  and every target test split (full sets).
+  and every target test split (full sets), plus MMD² against the source test.
+- ``--levels``: the same analysis on each pyramid level of the embedding
+  (e.g. P3 / P4 / P5 of the default ``encoder`` embedding) and/or the full
+  concatenated vector (``all``, the default).
 
 Input is a source results folder (``results/<model>/source_<label>``) or the
 W&B artifact the evaluation logged (``embeddings-<model>-<source>``)::
 
     uv run da-eval embeddings --results results/rtdetr/source_AFO --wandb-project rtdetrv4
     uv run da-eval embeddings --artifact embeddings-rtdetr-C:latest --wandb-project rtdetrv4
+    uv run da-eval embeddings --results results/rtdetr/source_AFO --levels all P3 P4 P5
 
 Needs the analysis extra: ``pip install "da-eval[analysis]"``.
 """
@@ -81,6 +85,21 @@ def ordered_groups(manifest: dict) -> list[dict]:
     return sorted(manifest["groups"], key=lambda g: rank.get((g["role"], g["split"]), 2))
 
 
+def embedding_levels(manifest: dict, dim: int) -> dict[str, tuple[int, int]]:
+    """Column range of each level of the saved embeddings, by name (``all`` = every column).
+
+    Read from the manifest. Results from before the levels were recorded are assumed
+    to be the default ``encoder`` embedding: three equal parts, [P3 | P4 | P5].
+    """
+    levels = manifest.get("embedding_levels")
+    if levels is None and dim % 3 == 0 and manifest.get("embedding_module", "encoder") == "encoder":
+        step = dim // 3
+        levels = [{"name": f"P{3 + i}", "start": i * step, "stop": (i + 1) * step} for i in range(3)]
+        print(f"[!] No embedding_levels in the manifest: assuming the default encoder embedding, "
+              f"[P3 | P4 | P5] with {step} columns each.")
+    return {"all": (0, dim), **{lv["name"]: (lv["start"], lv["stop"]) for lv in levels or []}}
+
+
 # ---------------------------------------------------------------------------
 # 2. Analysis
 # ---------------------------------------------------------------------------
@@ -93,8 +112,9 @@ def plot_projections(
     balanced: bool,
     seed: int,
     run: Any = None,
+    key_prefix: str = "embeddings",
 ) -> dict[str, Path]:
-    """Compute and plot each projection; save PNGs and optionally log them to W&B."""
+    """Compute and plot each projection; save PNGs and optionally log them to W&B (``<key_prefix>/<method>``)."""
     import matplotlib.pyplot as plt
 
     n = len(evaluator._get_data(balanced)[0])
@@ -113,7 +133,7 @@ def plot_projections(
         fig.savefig(path, dpi=180, bbox_inches="tight")
         if run is not None:
             import wandb
-            run.log({f"embeddings/{method}": wandb.Image(fig)})
+            run.log({f"{key_prefix}/{method}": wandb.Image(fig)})
         plt.close(fig)
         saved[method] = path
         print(f"[*] {names[method]} plot -> {path}")
@@ -135,17 +155,23 @@ def compute_group_metrics(
     k: int,
     metric: str,
     n_workers: int,
+    level: str = "all",
 ) -> list[dict]:
-    """pymdma metrics of each group against the source-train reference (full sets).
+    """pymdma metrics of each group against the source-train reference (full sets),
+    and MMD² against the source test split (as ``domain_gap_mmd`` in the evaluation).
 
     Returns one row per compared group; per-image scores are written to
     ``instance_scores_<dataset>_<split>.csv`` (joined with image ids when available).
     """
+    from da_eval.metrics import compute_domain_gap_mmd, median_heuristic_gamma
+
     reference = next((g for g in groups if g["role"] == "source" and g["split"] == "train"), None)
     if reference is None:
         print("[!] No source train embeddings: pymdma metrics need them as reference; skipped.")
-        return []
-    ref_emb = evaluator.embeddings_dict[reference["name"]]
+    ref_emb = evaluator.embeddings_dict[reference["name"]] if reference is not None else None
+    source_test = next((g for g in groups if g["role"] == "source" and g["split"] == "test"), None)
+    src_emb = evaluator.embeddings_dict[source_test["name"]] if source_test is not None else None
+    gamma = median_heuristic_gamma(src_emb) if src_emb is not None else None
 
     rows = []
     for g in groups:
@@ -153,14 +179,22 @@ def compute_group_metrics(
             continue
         emb = evaluator.embeddings_dict[g["name"]]
         row = {
-            "dataset": g["dataset"], "label": g.get("label", g["dataset"]), "split": g["split"], "role": g["role"],
-            "reference": reference["name"], "n_reference": len(ref_emb), "n_images": len(emb), "k": k, "metric": metric,
+            "level": level, "dataset": g["dataset"], "label": g.get("label", g["dataset"]), "split": g["split"],
+            "role": g["role"], "reference": reference["name"] if reference is not None else None,
+            "n_reference": len(ref_emb) if ref_emb is not None else 0, "n_images": len(emb), "k": k, "metric": metric,
+            **{m: None for m in PYMDMA_METRICS},
+            "mmd2_vs_source_test": None,
         }
+        if src_emb is not None and g is not source_test:
+            row["mmd2_vs_source_test"] = compute_domain_gap_mmd(src_emb, emb, gamma=gamma)
+        if ref_emb is None:
+            rows.append(row)
+            continue
         try:
             result = evaluator.compute_distribution_metrics(ref_emb, emb, k=k, metric=metric, n_workers=n_workers)
         except ValueError as exc:  # e.g. fewer than k+1 images
             print(f"[!] {g['name']}: pymdma metrics skipped ({exc})")
-            rows.append({**row, **{m: None for m in PYMDMA_METRICS}})
+            rows.append(row)
             continue
         row.update({m: float(np.asarray(result[m]["dataset"]).mean()) for m in PYMDMA_METRICS})
         rows.append(row)
@@ -175,7 +209,7 @@ def compute_group_metrics(
             for i in range(len(emb)):
                 img = images[i] if images else {}
                 writer.writerow([i, img.get("image_id", ""), img.get("file_name", ""), *(per_image[m][i] for m in usable)])
-        print(f"[*] {g['name']}: " + ", ".join(f"{m}={row[m]:.4f}" for m in PYMDMA_METRICS))
+        print(f"[*] {g['name']} ({level}): " + ", ".join(f"{m}={row[m]:.4f}" for m in PYMDMA_METRICS))
     return rows
 
 
@@ -190,8 +224,13 @@ def analyse_embeddings(
     n_workers: int = 4,
     out_dir: str | Path | None = None,
     run: Any = None,
+    levels: list[str] = ("all",),
 ) -> list[dict]:
-    """Run the projections and pymdma metrics for the embeddings in ``folder``."""
+    """Run the projections and pymdma metrics for the embeddings in ``folder``, once per level.
+
+    ``all`` (the full vector) is written to ``out_dir`` and logged under the plain keys;
+    every other level to ``out_dir/<level>`` and under keys with ``/<level>``.
+    """
     from da_eval.embedding_evaluation import EmbeddingEvaluator
 
     folder = Path(folder)
@@ -200,16 +239,33 @@ def analyse_embeddings(
     out_dir = Path(out_dir) if out_dir is not None else folder / "embedding_analysis"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    evaluator = EmbeddingEvaluator({g["name"]: str(folder / g["embeddings"]) for g in groups})
-    if balance:
-        evaluator.balance(max_samples_per_group=max_per_group, random_state=seed)
+    arrays = {g["name"]: np.load(folder / g["embeddings"]) for g in groups}
+    dim = next(iter(arrays.values())).shape[1]
+    levels = list(dict.fromkeys(levels))
+    available = embedding_levels(manifest, dim) if levels != ["all"] else {"all": (0, dim)}
+    unknown = [lv for lv in levels if lv not in available]
+    if unknown:
+        raise ValueError(f"Unknown level(s) {unknown}; available for these embeddings: {list(available)}")
 
     model = manifest.get("model_name", "model")
-    plot_projections(
-        evaluator, methods, f"{model} embeddings, source {manifest.get('source_label', manifest['source'])}",
-        out_dir, balance, seed, run,
-    )
-    rows = compute_group_metrics(evaluator, groups, folder, out_dir, k, metric, n_workers)
+    source_label = manifest.get("source_label", manifest["source"])
+    rows = []
+    for level in levels:
+        start, stop = available[level]
+        level_dir = out_dir if level == "all" else out_dir / level
+        level_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\n=== Level {level}: columns {start}:{stop} ===")
+
+        evaluator = EmbeddingEvaluator({name: np.ascontiguousarray(emb[:, start:stop]) for name, emb in arrays.items()})
+        if balance:   # same seed and group sizes -> the same images for every level
+            evaluator.balance(max_samples_per_group=max_per_group, random_state=seed)
+
+        suffix = "" if level == "all" else f" ({level})"
+        plot_projections(
+            evaluator, methods, f"{model} embeddings{suffix}, source {source_label}", level_dir, balance, seed, run,
+            key_prefix="embeddings" if level == "all" else f"embeddings/{level}",
+        )
+        rows += compute_group_metrics(evaluator, groups, folder, level_dir, k, metric, n_workers, level)
 
     if rows:
         csv_path = out_dir / "embedding_metrics.csv"
@@ -224,13 +280,17 @@ def analyse_embeddings(
 
 
 def log_metrics(run: Any, rows: list[dict]) -> None:
-    """``<dataset>/pymdma/<metric>`` summary keys (like ``<dataset>/map50`` in eval runs) + a table."""
+    """``<dataset>/pymdma/<metric>`` and ``<dataset>/mmd2`` summary keys (like ``<dataset>/map50``
+    in eval runs; ``/<level>`` is added for levels other than ``all``) + one table for all levels."""
     import wandb
 
     for row in rows:
+        level = "" if row["level"] == "all" else f"/{row['level']}"
         for m in PYMDMA_METRICS:
             if row[m] is not None:
-                run.summary[f"{row['dataset']}/pymdma/{m}"] = row[m]
+                run.summary[f"{row['dataset']}/pymdma{level}/{m}"] = row[m]
+        if row["mmd2_vs_source_test"] is not None:
+            run.summary[f"{row['dataset']}/mmd2{level}"] = row["mmd2_vs_source_test"]
     columns = list(rows[0])
     run.log({"Table 3: Embedding distribution metrics": wandb.Table(columns=columns, data=[[r[c] for c in columns] for r in rows])})
 
@@ -249,6 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--results", help="Source results folder, e.g. results/rtdetr/source_AFO")
     src.add_argument("--artifact", help="W&B embeddings artifact, e.g. embeddings-rtdetr-C:latest (needs --wandb-project)")
     p.add_argument("--methods", nargs="+", choices=METHODS, default=list(METHODS), help="Projections to plot")
+    p.add_argument("--levels", nargs="+", default=["all"],
+                   help="Embedding levels to analyse: 'all' (the full vector, default) and/or levels "
+                        "of the embedding, e.g. P3 P4 P5 for the default encoder embedding")
     p.add_argument("--no-balance", action="store_true", help="Plot all images instead of a balanced subset")
     p.add_argument("--max-per-group", type=int, default=None, help="Cap of images per group in the balanced plots")
     p.add_argument("--seed", type=int, default=42, help="Seed for balancing and projections")
@@ -286,7 +349,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.artifact and not args.wandb_project:
         raise SystemExit("--artifact needs --wandb-project")
     settings = {
-        "methods": args.methods, "balanced": not args.no_balance, "max_per_group": args.max_per_group,
+        "methods": args.methods, "levels": args.levels, "balanced": not args.no_balance, "max_per_group": args.max_per_group,
         "seed": args.seed, "k": args.k, "metric": args.metric,
     }
 
@@ -319,6 +382,7 @@ def main(argv: list[str] | None = None) -> None:
         analyse_embeddings(
             folder, methods=args.methods, balance=not args.no_balance, max_per_group=args.max_per_group,
             seed=args.seed, k=args.k, metric=args.metric, n_workers=args.n_workers, out_dir=out_dir, run=run,
+            levels=args.levels,
         )
     finally:
         if run is not None:
