@@ -36,6 +36,14 @@ import numpy as np
 
 METHODS = ("pca", "tsne", "umap", "pacmap")
 PYMDMA_METRICS = ("improved_precision", "improved_recall", "density", "coverage")
+# Row key -> (CSV file suffix, W&B table title) of the per-metric tables (Tables 3a-3e)
+LEVEL_TABLES = {
+    "improved_precision": ("improved_precision", "Improved precision"),
+    "improved_recall": ("improved_recall", "Improved recall"),
+    "density": ("density", "Density"),
+    "coverage": ("coverage", "Coverage"),
+    "mmd2_vs_source_test": ("mmd2", "MMD2 vs source test"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +120,13 @@ def plot_projections(
     balanced: bool,
     seed: int,
     run: Any = None,
-    key_prefix: str = "embeddings",
+    level: str = "all",
 ) -> dict[str, Path]:
-    """Compute and plot each projection; save PNGs and optionally log them to W&B (``<key_prefix>/<method>``)."""
+    """Compute and plot each projection; save PNGs and optionally log them to W&B.
+
+    Logged as ``embeddings_<method>/<level>``: W&B groups panels by the first key prefix,
+    so each projection gets its own section with one panel per level.
+    """
     import matplotlib.pyplot as plt
 
     n = len(evaluator._get_data(balanced)[0])
@@ -133,7 +145,7 @@ def plot_projections(
         fig.savefig(path, dpi=180, bbox_inches="tight")
         if run is not None:
             import wandb
-            run.log({f"{key_prefix}/{method}": wandb.Image(fig)})
+            run.log({f"embeddings_{method}/{level}": wandb.Image(fig)})
         plt.close(fig)
         saved[method] = path
         print(f"[*] {names[method]} plot -> {path}")
@@ -228,8 +240,8 @@ def analyse_embeddings(
 ) -> list[dict]:
     """Run the projections and pymdma metrics for the embeddings in ``folder``, once per level.
 
-    ``all`` (the full vector) is written to ``out_dir`` and logged under the plain keys;
-    every other level to ``out_dir/<level>`` and under keys with ``/<level>``.
+    ``all`` (the full vector) is written to ``out_dir`` and its metrics logged under the plain
+    keys; every other level to ``out_dir/<level>`` and under keys with ``/<level>``.
     """
     from da_eval.embedding_evaluation import EmbeddingEvaluator
 
@@ -263,7 +275,7 @@ def analyse_embeddings(
         suffix = "" if level == "all" else f" ({level})"
         plot_projections(
             evaluator, methods, f"{model} embeddings{suffix}, source {source_label}", level_dir, balance, seed, run,
-            key_prefix="embeddings" if level == "all" else f"embeddings/{level}",
+            level=level,
         )
         rows += compute_group_metrics(evaluator, groups, folder, level_dir, k, metric, n_workers, level)
 
@@ -274,14 +286,32 @@ def analyse_embeddings(
             writer.writeheader()
             writer.writerows(rows)
         print(f"[*] Metrics -> {csv_path}")
+        for m, (name, _) in LEVEL_TABLES.items():
+            columns, data = metric_by_level(rows, m)
+            with open(out_dir / f"embedding_metrics_{name}.csv", "w", newline="") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(columns)
+                writer.writerows(data)
+        print(f"[*] Per-metric tables (columns = levels) -> {out_dir}/embedding_metrics_<metric>.csv")
         if run is not None:
             log_metrics(run, rows)
     return rows
 
 
+def metric_by_level(rows: list[dict], metric: str) -> tuple[list[str], list[list]]:
+    """One metric as a table: one row per test split, one column per level (in analysis order)."""
+    levels = list(dict.fromkeys(r["level"] for r in rows))
+    by_split: dict[tuple, dict] = {}
+    for r in rows:
+        by_split.setdefault((r["dataset"], r["label"], r["split"], r["role"]), {})[r["level"]] = r[metric]
+    columns = ["dataset", "label", "split", "role", *levels]
+    return columns, [[*split, *(values.get(lv) for lv in levels)] for split, values in by_split.items()]
+
+
 def log_metrics(run: Any, rows: list[dict]) -> None:
     """``<dataset>/pymdma/<metric>`` and ``<dataset>/mmd2`` summary keys (like ``<dataset>/map50``
-    in eval runs; ``/<level>`` is added for levels other than ``all``) + one table for all levels."""
+    in eval runs; ``/<level>`` is added for levels other than ``all``), Table 3 with one row per
+    split and level, and Tables 3a-3e with one metric each (columns = levels)."""
     import wandb
 
     for row in rows:
@@ -293,6 +323,9 @@ def log_metrics(run: Any, rows: list[dict]) -> None:
             run.summary[f"{row['dataset']}/mmd2{level}"] = row["mmd2_vs_source_test"]
     columns = list(rows[0])
     run.log({"Table 3: Embedding distribution metrics": wandb.Table(columns=columns, data=[[r[c] for c in columns] for r in rows])})
+    for letter, (m, (_, title)) in zip("abcde", LEVEL_TABLES.items()):
+        columns, data = metric_by_level(rows, m)
+        run.log({f"Table 3{letter}: {title} by level": wandb.Table(columns=columns, data=data)})
 
 
 # ---------------------------------------------------------------------------
