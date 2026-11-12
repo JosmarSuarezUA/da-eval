@@ -761,14 +761,19 @@ def log_dataset_config(
     config_path: str | None = None,
     checkpoint_path: str | None = None,
     model_name: str | None = None,
+    model_settings: dict | None = None,
 ) -> None:
-    """Summarize run and dataset configurations in run.config."""
+    """Summarize run and dataset configurations in run.config.
+
+    ``model_settings``: model input settings (``input_size``, ``resize``) from the adapter.
+    """
     _require_wandb()
     config_update: dict = {
         "model_name":           model_name,
         "source_dataset_name":  source_name,
         "source_dataset_label": dataset_configs[source_name].get("label", source_name),
         "target_dataset_names": [n for n in dataset_configs if n != source_name],
+        **(model_settings or {}),
     }
     if config_path is not None:
         config_update["model_config_path"] = str(config_path)
@@ -781,10 +786,14 @@ def log_dataset_config(
 
 
 def log_target_scalars(run: Any, target_name: str, result: dict) -> None:
-    """Log final numeric metrics to run.summary."""
+    """Log final numeric metrics to run.summary.
+
+    Missing values (None, e.g. confidence stats with no detection above the threshold) are
+    logged too, so every run has the same summary keys whatever the data.
+    """
     _require_wandb()
     for key, value in result.items():
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)):
             run.summary[f"{target_name}/{key}"] = value
 
 

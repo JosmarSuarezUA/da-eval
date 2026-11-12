@@ -162,6 +162,17 @@ class YAMLEngineAdapter(DetectorAdapter):
     def describe(self) -> dict[str, Any]:
         return {**super().describe(), "config_path": self.config_path, "embedding_module": self.embedding_module}
 
+    def preprocessing(self) -> dict[str, Any]:
+        """From the val transforms: ``Resize`` to ``[h, w]`` stretches the image (no aspect ratio kept)."""
+        ops = (self.cfg.yaml_cfg.get("val_dataloader", {}).get("dataset", {})
+               .get("transforms", {}).get("ops", [])) if self.cfg is not None else []
+        size = next((op.get("size") for op in ops if isinstance(op, dict) and op.get("type") == "Resize"), None)
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            return {"input_size": [int(s) for s in size], "resize": "stretch"}
+        if isinstance(size, int):   # torchvision: an int resizes the shorter side, keeping the aspect ratio
+            return {"input_size": None, "resize": f"shorter side {size}"}
+        return super().preprocessing()
+
     def build_dataloader(self, img_folder: str, ann_file: str):
         """Build a fresh val-style dataloader for the given split."""
         if self.cfg is None:

@@ -65,6 +65,7 @@ class UltralyticsAdapter(DetectorAdapter):
 
         self.yolo = None
         self.imgsz: int | None = None
+        self.config_path: str | None = None
         self._features: list = []         # hooked features of each forward pass
         self._input_widths: list[int] = []
         self._hook_handles: list = []
@@ -94,7 +95,11 @@ class UltralyticsAdapter(DetectorAdapter):
         if isinstance(train_imgsz, (list, tuple)):
             train_imgsz = max(train_imgsz)
         self.imgsz = int(self.imgsz_override or train_imgsz)
-        self.name = f"YOLO ({Path(str(model.yaml.get('yaml_file', 'yolo'))).stem})"
+        # Architecture file the checkpoint was built from (e.g. yolo26n.yaml): the counterpart
+        # of the RT-DETR / D-FINE model config, reported as config_path.
+        self.config_path = str(model.yaml.get("yaml_file", "")) or None
+        stem = Path(self.config_path or "yolo").stem
+        self.name = f"YOLO{stem[4:]}" if stem.lower().startswith("yolo") else stem   # yolo26n -> YOLO26n
 
         def store_input(module, args):
             self._input_widths.append(int(args[0].shape[-1]))
@@ -115,7 +120,11 @@ class UltralyticsAdapter(DetectorAdapter):
         self._hook_handles = [hook, model.register_forward_pre_hook(store_input)]
 
     def describe(self) -> dict[str, Any]:
-        return {**super().describe(), "embedding_module": self.embedding_module, "imgsz": self.imgsz}
+        return {**super().describe(), "config_path": self.config_path, "embedding_module": self.embedding_module}
+
+    def preprocessing(self) -> dict[str, Any]:
+        """Square letterbox (aspect ratio kept, grey padding) to ``imgsz``."""
+        return {"input_size": [self.imgsz, self.imgsz] if self.imgsz else None, "resize": "letterbox"}
 
     # ------------------------------------------------------------------
     def run_split(

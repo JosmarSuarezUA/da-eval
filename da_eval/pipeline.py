@@ -132,8 +132,19 @@ class DetectorAdapter(ABC):
         ...
 
     def describe(self) -> dict[str, Any]:
-        """Model metadata stored in every result row and in the W&B run config."""
+        """Model metadata stored in every result row and in the W&B run config.
+
+        Every adapter returns the same keys (model_name, checkpoint_path, config_path,
+        embedding_module), so result tables and CSVs have the same columns for all models.
+        """
         return {"model_name": self.name, "checkpoint_path": self.checkpoint_path}
+
+    def preprocessing(self) -> dict[str, Any]:
+        """Input size ``[h, w]`` and resize mode ("stretch" / "letterbox") of the model.
+
+        Stored in the W&B run config and the embeddings manifest (not in the result rows).
+        """
+        return {"input_size": None, "resize": None}
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +354,7 @@ def evaluate_source_against_targets(
             config_path=model_info.get("config_path"),
             checkpoint_path=model_info.get("checkpoint_path"),
             model_name=model_info.get("model_name"),
+            model_settings=adapter.preprocessing(),
         )
 
     val_optimum = select_threshold_on_source_val(
@@ -422,7 +434,8 @@ def evaluate_source_against_targets(
 
     if embedding_groups:
         manifest_path = write_embeddings_manifest(
-            result_folder, embedding_groups, source_name, dataset_configs, model_info,
+            result_folder, embedding_groups, source_name, dataset_configs,
+            {**model_info, **adapter.preprocessing()},
             embedding_levels=adapter.embedding_levels,
         )
         if run is not None:

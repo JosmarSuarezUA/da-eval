@@ -101,6 +101,12 @@ uv run da-eval --model yolo --datasets /path/to/my_datasets.yaml \
   channels for YOLO26n, 448-d concatenated), the counterpart of the RT-DETR encoder output.
   `--levels P3 P4 P5` works as for the other models. `--embedding-module model.<i>` hooks another layer.
 - Results go to `results/yolo/source_<label>/` (`--result-root` to separate e.g. yolo26n and yolo26s).
+- **Same outputs as RT-DETRv4 / D-FINE:** the same files, CSV columns, W&B sections, summary keys
+  and tables. Only the model identifiers differ: `model_name` (e.g. `YOLO26n`), the tag and the
+  artifact name (`embeddings-yolo-<source>`). `config_path` is the architecture file stored in the
+  checkpoint (e.g. `yolo26n.yaml`).
+- Every model records its preprocessing in the W&B run config and the embeddings manifest:
+  `input_size` ([h, w]) and `resize` (`stretch` for RT-DETRv4 / D-FINE, `letterbox` for YOLO).
 
 ### Protocol
 
