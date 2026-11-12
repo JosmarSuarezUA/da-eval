@@ -12,6 +12,7 @@ import importlib
 ADAPTERS: dict[str, str] = {
     "rtdetrv4": "da_eval.adapters.yaml_engine:RTDETRv4Adapter",
     "dfine": "da_eval.adapters.yaml_engine:DFINEAdapter",
+    "yolo": "da_eval.adapters.ultralytics:UltralyticsAdapter",
 }
 
 

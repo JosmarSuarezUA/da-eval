@@ -12,6 +12,11 @@ Run it from inside the model repository, e.g. in RT-DETRv4::
         --checkpoint sds=output/rtv4_hgnetv2_s_coco_sds/best_stg1.pth \\
         --checkpoint afo=output/rtv4_hgnetv2_s_coco_afo/best_stg1.pth
 
+Ultralytics YOLO checkpoints need no config or repository (needs the [yolo] extra)::
+
+    uv run da-eval --model yolo --datasets ~/my_datasets.yaml \\
+        --checkpoint sds=runs/detect/sds/weights/best.pt
+
 Validate a datasets YAML (paths, COCO files, images, classes)::
 
     uv run da-eval check --datasets ~/my_datasets.yaml
@@ -24,6 +29,7 @@ Analyse the saved embeddings of one source (needs the [analysis] extra)::
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import sys
 
@@ -69,23 +75,52 @@ def build_parser() -> argparse.ArgumentParser:
                     "'da-eval embeddings --help' to analyse saved embeddings.",
     )
     p.add_argument("--model", required=True, choices=sorted(ADAPTERS), help="Detector adapter")
-    p.add_argument("--config", "-c", required=True, help="Model YAML config")
+    p.add_argument("--config", "-c", default=None, help="Model YAML config (rtdetrv4, dfine)")
     p.add_argument("--datasets", required=True, help="Datasets YAML (see datasets.example.yaml)")
     p.add_argument("--checkpoint", "-r", action="append", required=True, metavar="SOURCE=PATH",
                    help="Checkpoint trained on SOURCE (repeat for each source)")
     p.add_argument("--result-root", default=None, help="Output directory (default: results/<model>)")
-    p.add_argument("--repo-root", default=".", help="Model repository root")
+    p.add_argument("--repo-root", default=None, help="Model repository root (rtdetrv4, dfine; default: .)")
     p.add_argument("--device", default=None, help="Torch device (default: cuda:0 if available)")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--embedding-module", default="encoder", help="Module to hook for embeddings")
-    p.add_argument("--remap-mscoco", action="store_true", help="Standard MS COCO 80-class mapping")
+    p.add_argument("--embedding-module", default=None,
+                   help="Module to hook for embeddings (default: 'encoder' for rtdetrv4/dfine, "
+                        "'neck' = Detect-head inputs P3-P5 for yolo)")
+    p.add_argument("--imgsz", type=int, default=None,
+                   help="Inference size (yolo; default: the checkpoint's training imgsz)")
+    p.add_argument("--remap-mscoco", action="store_true", help="Standard MS COCO 80-class mapping (rtdetrv4, dfine)")
     p.add_argument("--no-embeddings", action="store_true", help="Skip embeddings, t-SNE and MMD")
     p.add_argument("--wandb-project", default=None, help="Optional W&B project name")
     p.add_argument("--wandb-entity", default=None, help="Optional W&B entity/team name")
     p.add_argument("-u", "--update", nargs="+", metavar="KEY=VALUE",
                    help="Override model config keys, like train.py -u (e.g. HGNetv2.pretrained=False)")
     return p
+
+
+# Adapter constructor argument -> command-line option, for error messages
+OPTION_NAMES = {
+    "config_path": "--config", "repo_root": "--repo-root", "embedding_module": "--embedding-module",
+    "imgsz": "--imgsz", "remap_mscoco": "--remap-mscoco", "yaml_overrides": "-u",
+}
+
+
+def build_adapter(model: str, options: dict):
+    """Create the adapter from the options it accepts; options left unset (None) use its defaults.
+
+    Options the model does not use, or required ones that are missing, stop with a clear message.
+    """
+    adapter_cls = get_adapter_class(model)
+    params = inspect.signature(adapter_cls).parameters
+    given = {k: v for k, v in options.items() if v is not None}
+    unused = [OPTION_NAMES.get(k, k) for k in given if k not in params]
+    if unused:
+        raise SystemExit(f"--model {model} does not use: {', '.join(unused)}")
+    missing = [OPTION_NAMES.get(k, k) for k, p in params.items()
+               if p.default is inspect.Parameter.empty and k not in given]
+    if missing:
+        raise SystemExit(f"--model {model} needs: {', '.join(missing)}")
+    return adapter_cls(**given)
 
 
 def check_main(argv: list[str]) -> None:
@@ -106,16 +141,17 @@ def main(argv: list[str] | None = None) -> None:
     dataset_configs = load_dataset_configs(args.datasets)
     checkpoints = _parse_checkpoints(args.checkpoint, dataset_configs)
 
-    adapter = get_adapter_class(args.model)(
-        config_path=args.config,
-        repo_root=args.repo_root,
-        device=args.device,
-        embedding_module=args.embedding_module,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        remap_mscoco=args.remap_mscoco,
-        yaml_overrides=parse_updates(args.update),
-    )
+    adapter = build_adapter(args.model, {
+        "config_path": args.config,
+        "repo_root": args.repo_root,
+        "device": args.device,
+        "embedding_module": args.embedding_module,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "imgsz": args.imgsz,
+        "remap_mscoco": args.remap_mscoco or None,
+        "yaml_overrides": parse_updates(args.update) or None,
+    })
     result_root = args.result_root or os.path.join("results", adapter.slug)
 
     all_results = run_all_sources(

@@ -1,6 +1,6 @@
 [project]
 name = "da-eval"
-version = "0.4.1"
+version = "0.5.0"
 description = "Shared domain-adaptation evaluation for object detectors (RT-DETRv4, D-FINE, Ultralytics)"
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,10 @@ analysis = [
     "pandas",
     "pymdma>=0.3.0",
     "umap-learn>=0.5.12",
+]
+# Ultralytics YOLO checkpoints (--model yolo): pip install "da-eval[yolo]"
+yolo = [
+    "ultralytics>=8.4",
 ]
 
 [project.scripts]

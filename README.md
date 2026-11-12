@@ -1,9 +1,11 @@
 # da-eval
 
 Shared training launcher and domain-adaptation evaluation for object detectors
-(RT-DETRv4, D-FINE; Ultralytics planned). It is installed automatically as a dependency of
+(RT-DETRv4, D-FINE, Ultralytics YOLO). It is installed automatically as a dependency of
 each model repository, so you normally don't clone it yourself. One implementation of the
 metrics and the protocol is used for every model, so results are directly comparable.
+`da-train` covers the RT-DETRv4 / D-FINE repositories; YOLO models are trained with Ultralytics
+and only evaluated here.
 
 ## 1. Describe your datasets in one YAML file
 
@@ -74,6 +76,31 @@ The number of classes is taken from the datasets, so a 1-class checkpoint can be
 an 80-class COCO config. ImageNet backbone weights are not loaded or downloaded during evaluation,
 because the checkpoint replaces every weight. Config keys can be overridden like `train.py -u`
 (`-u key=value ...`).
+
+### Ultralytics YOLO (e.g. YOLO26)
+
+The `.pt` checkpoint contains the model, so no config or model repository is needed. In any
+project (Python ≥ 3.10) with the yolo extra:
+
+```bash
+uv add "da-eval[yolo,analysis] @ git+https://github.com/JosmarSuarezUA/da-eval@<tag>"
+uv run da-eval --model yolo --datasets /path/to/my_datasets.yaml \
+    --checkpoint sds=runs/detect/sds/weights/best.pt \
+    --checkpoint afo=runs/detect/afo/weights/best.pt \
+    --wandb-project my_project
+```
+
+- **Classes:** YOLO class i must be the i-th category (sorted by id) of the source dataset;
+  the checkpoint's class count is checked against it.
+- **Input:** Ultralytics' own preprocessing, a **square letterbox** (aspect ratio kept, grey
+  padding) at the checkpoint's training `imgsz`; `--imgsz` overrides it. (`predict()` would use a
+  rectangular letterbox only for batches of same-sized images; the square one makes results
+  independent of `--batch-size`.) RT-DETRv4 / D-FINE stretch to 640×640 instead.
+- **Boxes:** YOLO26 is NMS-free like RT-DETR; up to 300 boxes per image (`max_det`), score ≥ 0.001.
+- **Embeddings:** by default the inputs of the `Detect` head, the neck outputs P3/P4/P5 (64/128/256
+  channels for YOLO26n, 448-d concatenated), the counterpart of the RT-DETR encoder output.
+  `--levels P3 P4 P5` works as for the other models. `--embedding-module model.<i>` hooks another layer.
+- Results go to `results/yolo/source_<label>/` (`--result-root` to separate e.g. yolo26n and yolo26s).
 
 ### Protocol
 
@@ -175,7 +202,10 @@ Subclass `da_eval.pipeline.DetectorAdapter` and implement:
   COCO-format predictions (class index i → i-th category in sorted id order of the
   annotation file) and optional `(num_images, dim)` embeddings.
 
-Then register it in `da_eval/adapters/__init__.py`.
+Then register it in `da_eval/adapters/__init__.py`. `da_eval.adapters.common` has the shared
+category mapping and the embedding pooling (`pool_features`, `feature_levels` for the P3/P4/P5
+layout in the manifest). The command-line options an adapter receives are the arguments of its
+constructor; any other option is rejected with a clear message.
 
 ## Developing da-eval
 
@@ -195,7 +225,9 @@ da_eval/
   metrics.py            framework-agnostic metrics, plots, CSV and W&B helpers
   pipeline.py           DetectorAdapter interface + evaluation protocol
   adapters/
+    common.py           category mapping, embedding hook / pooling / level layout
     yaml_engine.py      RT-DETRv4 and D-FINE (shared YAMLConfig engine)
+    ultralytics.py      Ultralytics YOLO checkpoints (yolo extra)
   embedding_evaluation.py  EmbeddingEvaluator: projections and pymdma metrics (analysis extra)
   embedding_analysis.py    da-eval embeddings command
   cli.py                da-eval command (evaluation, check, embeddings)
